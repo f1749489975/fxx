@@ -1,0 +1,99 @@
+name: Build Obfuscate BPB Panel (Stable Version)
+
+on:
+  push:
+    branches: [ main ]
+  schedule:
+    - cron: "0 1 * * *"  # 每天UTC 1:00 AM自动运行
+
+env:
+  WORKDIR: "bpb-build"  # 所有操作在此子目录进行（可按需修改）
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      # 1. 检出代码到子目录
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          path: ${{ env.WORKDIR }}
+
+      # 2. 验证目录结构（调试用）
+      - name: Debug directory structure
+        run: |
+          echo "仓库内容："
+          ls -la ${{ env.WORKDIR }}
+          echo "package.json 路径：${{ env.WORKDIR }}/package.json"
+
+      # 3. 设置Node.js并配置缓存
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: "${{ env.WORKDIR }}/package.json"
+
+      # 4. 强制验证package.json存在
+      - name: Validate package.json
+        working-directory: ${{ env.WORKDIR }}
+        run: |
+          if [ ! -f "package.json" ]; then
+            echo "::error::必须存在 ${{ env.WORKDIR }}/package.json"
+            echo "当前目录内容："
+            ls -la
+            exit 1
+          fi
+
+      # 5. 安装依赖（带缓存恢复提示）
+      - name: Install dependencies
+        working-directory: ${{ env.WORKDIR }}
+        run: |
+          if [ -d "node_modules" ]; then
+            echo "检测到缓存依赖，跳过安装"
+          else
+            npm install
+          fi
+
+      # 6. 下载待混淆文件
+      - name: Download worker source
+        working-directory: ${{ env.WORKDIR }}
+        run: |
+          wget -O origin.js https://raw.githubusercontent.com/bia-pain-bache/BPB-Worker-Panel/main/build/unobfuscated-worker.js
+          [ -f "origin.js" ] || { echo "::error::文件下载失败"; exit 1; }
+
+      # 7. 执行混淆
+      - name: Obfuscate worker
+        working-directory: ${{ env.WORKDIR }}
+        run: |
+          npx javascript-obfuscator origin.js --output _worker.js \
+            --compact true \
+            --control-flow-flattening true \
+            --control-flow-flattening-threshold 1 \
+            --dead-code-injection true \
+            --dead-code-injection-threshold 1 \
+            --identifier-names-generator hexadecimal \
+            --rename-globals true \
+            --string-array true \
+            --string-array-encoding 'rc4' \
+            --string-array-threshold 1 \
+            --transform-object-keys true \
+            --unicode-escape-sequence true
+
+      # 8. 验证输出文件
+      - name: Verify output
+        working-directory: ${{ env.WORKDIR }}
+        run: |
+          [ -f "_worker.js" ] || { echo "::error::混淆失败：未生成_worker.js"; exit 1; }
+          echo "✅ 成功生成文件（大小: $(wc -c <_worker.js) bytes）"
+
+      # 9. 提交变更
+      - name: Commit changes
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          branch: main
+          commit_message: ":arrow_up: update obfuscated worker"
+          file_pattern: "${{ env.WORKDIR }}/_worker.js"
+          skip_if_empty: true
